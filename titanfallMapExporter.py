@@ -9,8 +9,8 @@ import os
 import math
 
 #settings
-map_name = 'sp_sewers1'
-map_unpacked_path='G:\\tmp\\sp_sewers\\' #path to unpacked bsp folder with "models" and "maps" subfolder
+map_name = 'mp_wargames'
+map_unpacked_path='G:\\tmp\\mp_wargames\\' #path to unpacked bsp folder with "models" and "maps" subfolder
 common_model_path_prefix='G:\\tmp\\mp_common\\' # path to unpacked englishclient_mp_common.bsp.pak000_dir.vpk (only models folder is needed)
 #not settings
 model_path_prefix=map_unpacked_path
@@ -217,7 +217,7 @@ def load_leaf(f,all_indices):
         #    vf=struct.unpack_from('<ffff',f.read(4*4))
         #    if (i+min_tri_id) in all_indices:
         #        cv.vertices.append([vf[0],vf[2],vf[1]])
-        print("Tris: {} l:{}".format(len(cv.triangles),len(all_indices)))
+        #print("Tris: {} l:{}".format(len(cv.triangles),len(all_indices)))
         return cv
 
 def load_root_verts(f,n,count):
@@ -230,10 +230,10 @@ def load_root_verts(f,n,count):
     return verts
 def load_node(f,all_indices):
     entry=f.tell()
-    print("Node: {}".format(entry))
+    #print("Node: {}".format(entry))
     n=TreeNode(f.read(TreeNode.get_size()))
     n.entry=entry
-    print("R: {} C: {} ".format(n.right_node_offset,n.convex_offset))
+    #print("R: {} C: {} ".format(n.right_node_offset,n.convex_offset))
     with location_saved(f):
         #if n.is_leaf:
         if n.convex_offset!=0:
@@ -346,53 +346,22 @@ def load_mdl_file(path):
         bbox_phy_min=[99999,99999,99999]
         bbox_phy_max=[-99999,-99999,-99999]
         for i in range(head0.solidCount):
+            assert(i==0)
             f.seek(next_header)
             chead=CompactSurfHeader(f.read(CompactSurfHeader.get_size()))
-            root_node,root_verts=load_tree(f,chead.offset_tree-CompactSurfHeader.get_size()+CompactSurfHeader.get_model_start())
             next_header+=chead.size
-            cur_pos=phy_offset+PhyHeader.get_size()
-            while cur_pos<vertex_pos:
-                ph=PhyFaceHeader(f.read(PhyFaceHeader.get_size()))
-                #print(hex(ph.unk))
-                vertex_pos=cur_pos+ph.vert_offset
-                cur_pos+=PhyFaceHeader.get_size()
-                for j in range(ph.tri_count): #ConvexTriangle in SourceIO
-                    f.seek(4,1) # u8 tri_index,u8 unk,u16 unk
-                    cur_pos+=4
-                    tri=[]
-                    for k in range(3):
-                        vert_id=struct.unpack_from('<H', f.read(2), 0)[0]
-                        if vert_id>max_vert:
-                            max_vert=vert_id
-                        tri.append(vert_id)
-                        f.seek(2,1) #unk per tri
-                        cur_pos+=4
-                    #print(tri)
-                    if not(ph.unk&1): #skip top level convex hull
-                        ret_mesh.tris.append(tri)
-            for j in range(max_vert+1):
-            #while cur_pos<next_header:
-                v=[]
-                for k in range(3):
-                    vf=struct.unpack_from('<f', f.read(4), 0)[0]
-                    v.append(vf)
-                    if bbox_phy_max[k]<vf:
-                        bbox_phy_max[k]=vf
-                    if bbox_phy_min[k]>vf:
-                        bbox_phy_min[k]=vf
-                f.seek(4,1)
-                cur_pos+=16
-                ret_mesh.verts.append([v[0],v[2],v[1]]) # exchange y and z, because bbox'es don't match the mdl!
-            #print(max_vert)
+            root_node,root_verts=load_tree(f,chead.offset_tree-CompactSurfHeader.get_size()+CompactSurfHeader.get_model_start())
             tmp_tris=[]
             concat_tree(root_node,tmp_tris)
             ret_mesh.verts=root_verts
             ret_mesh.tris=tmp_tris
             dump_ply(root_verts,tmp_tris,"tmp.ply")
-        print(len(ret_mesh.tris),len(ret_mesh.verts))
+            cur_pos=phy_offset+PhyHeader.get_size()
+
+        #print(len(ret_mesh.tris),len(ret_mesh.verts))
         #print(((bbox_phy_max[0]-bbox_phy_min[0])*40,(bbox_phy_max[1]-bbox_phy_min[1])*40,(bbox_phy_max[2]-bbox_phy_min[2])*40))
-        dump_ply(ret_mesh.verts,ret_mesh.tris,"out.ply")
-        quit()
+        #dump_ply(ret_mesh.verts,ret_mesh.tris,"out.ply")
+        #quit()
         #print(ret_mesh)
         return ret_mesh
 
