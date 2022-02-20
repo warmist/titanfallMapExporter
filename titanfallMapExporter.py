@@ -9,8 +9,8 @@ import os
 import math
 
 #settings
-map_name = 'mp_wargames'
-map_unpacked_path='G:\\tmp\\mp_wargames\\' #path to unpacked bsp folder with "models" and "maps" subfolder
+map_name = 'sp_sewers1'
+map_unpacked_path='G:\\tmp\\sp_sewers\\' #path to unpacked bsp folder with "models" and "maps" subfolder
 common_model_path_prefix='G:\\tmp\\mp_common\\' # path to unpacked englishclient_mp_common.bsp.pak000_dir.vpk (only models folder is needed)
 #not settings
 model_path_prefix=map_unpacked_path
@@ -138,18 +138,25 @@ class CompactSurfHeader(LumpElement):
         return 80
     @staticmethod
     def get_model_start():
-        return 28
+        return 32
 
 class PhyFaceHeader(LumpElement): #SourceIO ConvexLeaf
     def __init__(self, data):
-        self.size = struct.unpack_from('<I', data, 0)[0]
+        self.vert_offset = struct.unpack_from('<I', data, 0)[0] #vertex offset
         self.boneidx = struct.unpack_from('<I', data, 4)[0]
         self.unk=struct.unpack_from('<I', data, 8)[0]
-        self.tri_count=struct.unpack_from('<I', data, 12)[0]
+        self.tri_count=struct.unpack_from('<h', data, 12)[0]
+        self.pad=struct.unpack_from('<h', data, 14)[0]
 
     @staticmethod
     def get_size():
         return 16
+
+class ConvexLeaf():
+    def __init__(self):
+        self.head: PhyHeader=None
+        self.tris = []
+        self.vertices=[]
 
 class TreeNode():
     def __init__(self, data):
@@ -159,12 +166,108 @@ class TreeNode():
         self.right_node: Optional[TreeNode] = None
         self.convex_leaf: Optional[ConvexLeaf] = None
 
+    @property
+    def is_leaf(self):
+        return self.right_node_offset == 0
+
     @staticmethod
     def get_size():
-        return 24
+        return 28
 
-def load_tree(data,root_offset):
-    pass
+class location_saved(object):
+    def __init__(self, f):
+        self.f=f
+
+    def __enter__(self):
+        self.location = self.f.tell()
+        return self.f
+
+    def __exit__(self,exc_type, exc_value, exc_traceback):
+        self.f.seek(self.location)
+
+def load_leaf(f,all_indices):
+    cv=ConvexLeaf()
+    entry=f.tell()
+    cv.entry=entry
+    cv.head=PhyFaceHeader(f.read(PhyFaceHeader.get_size()))
+    with location_saved(f):
+        #all_indices = set()
+        triangles = []
+
+        for _ in range(cv.head.tri_count):
+            f.seek(4,1)# pad
+            tri=[]
+            for i in range(3):
+                tri.append(struct.unpack_from('<HH', f.read(4),0)[0])
+            triangles.append(tri)
+            all_indices.update(tri)
+        #print(min(all_indices),max(all_indices))
+        cv.triangles=triangles
+
+        #min_tri_id=min(all_indices)
+        #mapping={}
+        #for i,id in zip(sorted(all_indices),range(max(all_indices)-min(all_indices)+1)):
+        #    print(id,i)
+        #    mapping[i]=id
+        #cv.triangles[:]=map(lambda x: [x[0]-min_tri_id,x[1]-min_tri_id,x[2]-min_tri_id],triangles)
+        #cv.triangles[:]=map(lambda x: [mapping[x[0]],mapping[x[1]],mapping[x[2]]],triangles)
+        #f.seek(entry + cv.head.vert_offset)
+        #vf=[]
+        #for i in range(max(all_indices)-min_tri_id+1):
+        #    vf=struct.unpack_from('<ffff',f.read(4*4))
+        #    if (i+min_tri_id) in all_indices:
+        #        cv.vertices.append([vf[0],vf[2],vf[1]])
+        print("Tris: {} l:{}".format(len(cv.triangles),len(all_indices)))
+        return cv
+
+def load_root_verts(f,n,count):
+    verts=[]
+    with location_saved(f):
+        f.seek(n.convex_leaf.entry+n.convex_leaf.head.vert_offset)
+        for i in range(count):
+            vf=struct.unpack_from('<ffff',f.read(4*4))
+            verts.append([vf[0],vf[2],vf[1]])
+    return verts
+def load_node(f,all_indices):
+    entry=f.tell()
+    print("Node: {}".format(entry))
+    n=TreeNode(f.read(TreeNode.get_size()))
+    n.entry=entry
+    print("R: {} C: {} ".format(n.right_node_offset,n.convex_offset))
+    with location_saved(f):
+        #if n.is_leaf:
+        if n.convex_offset!=0:
+            with location_saved(f):
+                f.seek(entry+n.convex_offset)
+                n.convex_leaf=load_leaf(f,all_indices)
+            #return n
+            if n.is_leaf:
+                return n
+        n.left_node=load_node(f,all_indices)
+        with location_saved(f):
+            f.seek(entry+n.right_node_offset)
+            n.right_node=load_node(f,all_indices)
+    return n
+def load_tree(f,root_offset):
+    print("Loading with offset:{}".format(root_offset))
+    with location_saved(f):
+        f.seek(root_offset,1)
+        all_indices=set()
+        root=load_node(f,all_indices)
+        verts=load_root_verts(f,root,len(all_indices))
+        return root,verts
+
+def concat_tree(n,tbl_tris):
+    if n.is_leaf:
+        #tbl_tris.extend(map(lambda x: [x[0]+cur_verts,x[1]+cur_verts,x[2]+cur_verts],n.convex_leaf.triangles))
+        tbl_tris.extend(n.convex_leaf.triangles)
+    else:
+        if not(n.left_node is None):
+            concat_tree(n.left_node,tbl_tris)
+        if not(n.right_node is None):
+            concat_tree(n.right_node,tbl_tris)
+
+
 class MDL_Mesh():
     def __init__(self):
         self.tris=[]
@@ -245,12 +348,13 @@ def load_mdl_file(path):
         for i in range(head0.solidCount):
             f.seek(next_header)
             chead=CompactSurfHeader(f.read(CompactSurfHeader.get_size()))
+            root_node,root_verts=load_tree(f,chead.offset_tree-CompactSurfHeader.get_size()+CompactSurfHeader.get_model_start())
             next_header+=chead.size
             cur_pos=phy_offset+PhyHeader.get_size()
             while cur_pos<vertex_pos:
                 ph=PhyFaceHeader(f.read(PhyFaceHeader.get_size()))
                 #print(hex(ph.unk))
-                vertex_pos=cur_pos+ph.size
+                vertex_pos=cur_pos+ph.vert_offset
                 cur_pos+=PhyFaceHeader.get_size()
                 for j in range(ph.tri_count): #ConvexTriangle in SourceIO
                     f.seek(4,1) # u8 tri_index,u8 unk,u16 unk
@@ -280,10 +384,15 @@ def load_mdl_file(path):
                 cur_pos+=16
                 ret_mesh.verts.append([v[0],v[2],v[1]]) # exchange y and z, because bbox'es don't match the mdl!
             #print(max_vert)
-        #print(len(ret_mesh.tris),len(ret_mesh.verts))
+            tmp_tris=[]
+            concat_tree(root_node,tmp_tris)
+            ret_mesh.verts=root_verts
+            ret_mesh.tris=tmp_tris
+            dump_ply(root_verts,tmp_tris,"tmp.ply")
+        print(len(ret_mesh.tris),len(ret_mesh.verts))
         #print(((bbox_phy_max[0]-bbox_phy_min[0])*40,(bbox_phy_max[1]-bbox_phy_min[1])*40,(bbox_phy_max[2]-bbox_phy_min[2])*40))
+        dump_ply(ret_mesh.verts,ret_mesh.tris,"out.ply")
         quit()
-        #dump_ply(ret_mesh.verts,ret_mesh.tris,"out.ply")
         #print(ret_mesh)
         return ret_mesh
 
